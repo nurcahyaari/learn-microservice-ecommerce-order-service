@@ -26,7 +26,7 @@ export class ProductsService {
     try {
       console.log('carts: ', carts);
       for (const cart of carts) {
-        await axios.patch(
+        const res = await axios.patch(
           `${this.baseUrl}/v1/products/product_variant/patch-stock/transaction-start/${cart.product_variant_id}`,
           {
             quantity: cart.quantity,
@@ -37,6 +37,7 @@ export class ProductsService {
             },
           },
         );
+        console.log(res);
       }
 
       return true;

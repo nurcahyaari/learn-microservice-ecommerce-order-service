@@ -10,6 +10,7 @@ import { Orders, OrderStatus } from './entity/orders';
 import { OrdersDetail } from './entity/orders_detail';
 import { OrdersRepository } from './repository/orders.repository';
 import { OrdersDetailRepository } from './repository/orders_detail.repository';
+import { MutexService } from 'src/libraries/mutex/mutex.service';
 
 @Injectable()
 export class OrderService {
@@ -20,6 +21,7 @@ export class OrderService {
     private readonly ordersDetailRepository: OrdersDetailRepository,
     private readonly cartService: CartsService,
     private readonly productService: ProductsService,
+    private readonly mutex: MutexService,
   ) {}
 
   async GetUserOrder(param: UserOrderParam): Promise<Orders[]> {
@@ -47,73 +49,81 @@ export class OrderService {
       (data) => data.product_variant_id,
     );
 
-    // first add new order
-    // get a connection and create a new query runner
-    const connection = getConnection();
-    const queryRunner = connection.createQueryRunner();
+    const mutex = this.mutex.NewMutex();
 
-    // establish real database connection using our new query runner
-    await queryRunner.connect();
+    const result = await mutex.runExclusive(async () => {
+      // first add new order
+      // get a connection and create a new query runner
+      const connection = getConnection();
+      const queryRunner = connection.createQueryRunner();
 
-    await queryRunner.startTransaction();
+      // establish real database connection using our new query runner
+      await queryRunner.connect();
 
-    try {
-      const order = new Orders();
-      order.user_id = userCarts.data[0].user_id;
-      order.total_quantity = userCarts.data.reduce(
-        (prevVal: number, curVal: CartsFromExternal) =>
-          (prevVal += curVal.quantity),
-        0,
-      );
-      order.total_price = userCarts.data.reduce(
-        (prevVal: number, curVal: CartsFromExternal) =>
-          (prevVal += curVal.price),
-        0,
-      );
-      order.order_status = OrderStatus.PENDING;
-      const newOrder = await queryRunner.manager.save(order);
+      await queryRunner.startTransaction();
 
-      const orderDetails: OrdersDetail[] = [];
+      try {
+        const order = new Orders();
+        order.user_id = userCarts.data[0].user_id;
+        order.total_quantity = userCarts.data.reduce(
+          (prevVal: number, curVal: CartsFromExternal) =>
+            (prevVal += curVal.quantity),
+          0,
+        );
+        order.total_price = userCarts.data.reduce(
+          (prevVal: number, curVal: CartsFromExternal) =>
+            (prevVal += curVal.price),
+          0,
+        );
+        order.order_status = OrderStatus.PENDING;
+        const newOrder = await queryRunner.manager.save(order);
 
-      for (const cart of userCarts.data) {
-        const orderDetail = new OrdersDetail();
-        orderDetail.price = cart.price;
-        orderDetail.quantity = cart.quantity;
-        orderDetail.product_variant_id = cart.product_variant_id;
-        orderDetail.orders = newOrder;
-        orderDetails.push(orderDetail);
+        const orderDetails: OrdersDetail[] = [];
+
+        for (const cart of userCarts.data) {
+          const orderDetail = new OrdersDetail();
+          orderDetail.price = cart.price;
+          orderDetail.quantity = cart.quantity;
+          orderDetail.product_variant_id = cart.product_variant_id;
+          orderDetail.orders = newOrder;
+          orderDetails.push(orderDetail);
+        }
+        order.order_detail = orderDetails;
+
+        await queryRunner.manager.save(orderDetails);
+
+        // delete user cart after save data order
+        if (cartIds.length > 1) {
+          await this.cartService.DeleteBulkUserCart(auth, cartIds);
+        } else {
+          await this.cartService.DeleteUserCart(auth, cartIds[0]);
+        }
+        // patch product quantity after save data order
+        await this.productService.PatchProductVariantStockByVariantId(
+          auth,
+          userCarts.data,
+        );
+        await this.productService.CommitPatchProductVariantStockByVariantId(
+          auth,
+        );
+        await this.cartService.CommitDeleteUserCart(auth);
+        await queryRunner.commitTransaction();
+        console.log('order - success');
+        return 'success make order';
+      } catch (e) {
+        console.log('order - failed');
+        console.log(e.message);
+        await queryRunner.rollbackTransaction();
+        await this.cartService.RollbackUserCart(auth);
+        await this.productService.RollbackPatchProductVariantStockByVariantId(
+          auth,
+        );
+        return 'failed make order';
+      } finally {
+        await queryRunner.release();
       }
-      order.order_detail = orderDetails;
+    });
 
-      await queryRunner.manager.save(orderDetails);
-
-      // delete user cart after save data order
-      if (cartIds.length > 1) {
-        await this.cartService.DeleteBulkUserCart(auth, cartIds);
-      } else {
-        await this.cartService.DeleteUserCart(auth, cartIds[0]);
-      }
-      // patch product quantity after save data order
-      await this.productService.PatchProductVariantStockByVariantId(
-        auth,
-        userCarts.data,
-      );
-      await this.productService.CommitPatchProductVariantStockByVariantId(auth);
-      await this.cartService.CommitDeleteUserCart(auth);
-      await queryRunner.commitTransaction();
-      console.log('order - success');
-      return 'success make order';
-    } catch (e) {
-      console.log('order - failed');
-      console.log(e.message);
-      await queryRunner.rollbackTransaction();
-      await this.cartService.RollbackUserCart(auth);
-      await this.productService.RollbackPatchProductVariantStockByVariantId(
-        auth,
-      );
-      return 'failed make order';
-    } finally {
-      await queryRunner.release();
-    }
+    return result;
   }
 }

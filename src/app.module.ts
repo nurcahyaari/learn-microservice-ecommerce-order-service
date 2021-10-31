@@ -5,6 +5,8 @@ import { AppService } from './app.service';
 import { OrderModule } from './order/order.module';
 import { ProductsModule } from './external/products/products.module';
 import { CartsModule } from './external/carts/carts.module';
+import { MutexService } from './libraries/mutex/mutex.service';
+import { MutexModule } from './libraries/mutex/mutex.module';
 
 @Module({
   imports: [
@@ -25,8 +27,9 @@ import { CartsModule } from './external/carts/carts.module';
     OrderModule,
     ProductsModule,
     CartsModule,
+    MutexModule,
   ],
   controllers: [],
-  providers: [AppService],
+  providers: [AppService, MutexService],
 })
 export class AppModule {}
